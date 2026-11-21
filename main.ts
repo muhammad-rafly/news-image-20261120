@@ -1,363 +1,375 @@
-// The World Today — Friday 20 November 2026.
-// A newspaper front page drawn entirely in code: own PNG encoder (CRC32 +
-// zlib), own 5x7 bitmap font, fixed-seed layout. Node 22, stdlib only,
-// no network, no randomness, no clock: two runs write identical bytes.
+// The World Today v2 — Friday 20 November 2026 (make.fun news-image-20261120).
+// Node 22, standard library only. Draws a 1024x1024 newspaper front page
+// entirely in code — own PNG encoder (CRC32 + zlib), own 5x7 bitmap font,
+// fixed-seed layout — and writes it to /output/entry.png. Deterministic:
+// two runs produce identical bytes. No network, no Math.random, no Date.now.
 
-const fs = require("node:fs");
-const path = require("node:path");
-const zlib = require("node:zlib");
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { deflateSync } from 'node:zlib';
 
 const W = 1024;
 const H = 1024;
 
-// ---- palette -------------------------------------------------------------
-const PAPER = [245, 239, 224]; // warm newsprint
-const INK = [20, 20, 20]; // near-black text
-const RED = [176, 30, 30]; // kicker red
-const BAND = [17, 17, 17]; // black date band
+// ---------------------------------------------------------------- font: 5x7
+// Each glyph is 7 rows of 5 bits, top to bottom, leftmost column first.
+const FONT: Record<string, string[]> = {
+  A: ['01110', '10001', '10001', '11111', '10001', '10001', '10001'],
+  B: ['11110', '10001', '10001', '11110', '10001', '10001', '11110'],
+  C: ['01110', '10001', '10000', '10000', '10000', '10001', '01110'],
+  D: ['11110', '10001', '10001', '10001', '10001', '10001', '11110'],
+  E: ['11111', '10000', '10000', '11110', '10000', '10000', '11111'],
+  F: ['11111', '10000', '10000', '11110', '10000', '10000', '10000'],
+  G: ['01110', '10001', '10000', '10111', '10001', '10001', '01111'],
+  H: ['10001', '10001', '10001', '11111', '10001', '10001', '10001'],
+  I: ['01110', '00100', '00100', '00100', '00100', '00100', '01110'],
+  J: ['00111', '00010', '00010', '00010', '00010', '10010', '01100'],
+  K: ['10001', '10010', '10100', '11000', '10100', '10010', '10001'],
+  L: ['10000', '10000', '10000', '10000', '10000', '10000', '11111'],
+  M: ['10001', '11011', '10101', '10101', '10001', '10001', '10001'],
+  N: ['10001', '11001', '10101', '10011', '10001', '10001', '10001'],
+  O: ['01110', '10001', '10001', '10001', '10001', '10001', '01110'],
+  P: ['11110', '10001', '10001', '11110', '10000', '10000', '10000'],
+  Q: ['01110', '10001', '10001', '10001', '10101', '10010', '01101'],
+  R: ['11110', '10001', '10001', '11110', '10100', '10010', '10001'],
+  S: ['01111', '10000', '10000', '01110', '00001', '00001', '11110'],
+  T: ['11111', '00100', '00100', '00100', '00100', '00100', '00100'],
+  U: ['10001', '10001', '10001', '10001', '10001', '10001', '01110'],
+  V: ['10001', '10001', '10001', '10001', '10001', '01010', '00100'],
+  W: ['10001', '10001', '10001', '10101', '10101', '11011', '10001'],
+  X: ['10001', '10001', '01010', '00100', '01010', '10001', '10001'],
+  Y: ['10001', '10001', '01010', '00100', '00100', '00100', '00100'],
+  Z: ['11111', '00001', '00010', '00100', '01000', '10000', '11111'],
+  '0': ['01110', '10001', '10011', '10101', '11001', '10001', '01110'],
+  '1': ['00100', '01100', '00100', '00100', '00100', '00100', '01110'],
+  '2': ['01110', '10001', '00001', '00110', '01000', '10000', '11111'],
+  '3': ['11110', '00001', '00001', '01110', '00001', '00001', '11110'],
+  '4': ['00010', '00110', '01010', '10010', '11111', '00010', '00010'],
+  '5': ['11111', '10000', '11110', '00001', '00001', '10001', '01110'],
+  '6': ['00110', '01000', '10000', '11110', '10001', '10001', '01110'],
+  '7': ['11111', '00001', '00010', '00100', '01000', '01000', '01000'],
+  '8': ['01110', '10001', '10001', '01110', '10001', '10001', '01110'],
+  '9': ['01110', '10001', '10001', '01111', '00001', '00010', '01100'],
+  ' ': ['00000', '00000', '00000', '00000', '00000', '00000', '00000'],
+  '.': ['00000', '00000', '00000', '00000', '00000', '01100', '01100'],
+  ',': ['00000', '00000', '00000', '00000', '01100', '00100', '01000'],
+  ':': ['00000', '01100', '01100', '00000', '01100', '01100', '00000'],
+  ';': ['00000', '01100', '01100', '00000', '01100', '00100', '01000'],
+  "'": ['00100', '00100', '01000', '00000', '00000', '00000', '00000'],
+  '"': ['01010', '01010', '00000', '00000', '00000', '00000', '00000'],
+  '-': ['00000', '00000', '00000', '01110', '00000', '00000', '00000'],
+  '(': ['00010', '00100', '01000', '01000', '01000', '00100', '00010'],
+  ')': ['01000', '00100', '00010', '00010', '00010', '00100', '01000'],
+  '%': ['11001', '11010', '00010', '00100', '01000', '01011', '10011'],
+  '$': ['00100', '01111', '10100', '01110', '00101', '11110', '00100'],
+  '&': ['01100', '10010', '10100', '01000', '10101', '10010', '01101'],
+  '/': ['00001', '00010', '00010', '00100', '01000', '01000', '10000'],
+  '+': ['00000', '00100', '00100', '11111', '00100', '00100', '00000'],
+  '=': ['00000', '00000', '11111', '00000', '11111', '00000', '00000'],
+  '!': ['00100', '00100', '00100', '00100', '00100', '00000', '00100'],
+  '?': ['01110', '10001', '00001', '00110', '00100', '00000', '00100'],
+  '•': ['00000', '00000', '01110', '01110', '01110', '00000', '00000'],
+};
 
-// ---- framebuffer ---------------------------------------------------------
-const px = new Uint8Array(W * H * 3);
+// ---------------------------------------------------------------- canvas
+const PAPER: [number, number, number] = [244, 236, 220];
+const INK: [number, number, number] = [16, 16, 16];
+const RED: [number, number, number] = [178, 34, 34];
+const WHITE: [number, number, number] = [255, 255, 255];
+
+const img = Buffer.alloc(W * H * 3);
 for (let i = 0; i < W * H; i++) {
-  px[i * 3] = PAPER[0];
-  px[i * 3 + 1] = PAPER[1];
-  px[i * 3 + 2] = PAPER[2];
+  img[i * 3] = PAPER[0];
+  img[i * 3 + 1] = PAPER[1];
+  img[i * 3 + 2] = PAPER[2];
 }
 
-function setPixel(x, y, c) {
+function px(x: number, y: number, c: [number, number, number]): void {
   if (x < 0 || x >= W || y < 0 || y >= H) return;
   const o = (y * W + x) * 3;
-  px[o] = c[0];
-  px[o + 1] = c[1];
-  px[o + 2] = c[2];
+  img[o] = c[0];
+  img[o + 1] = c[1];
+  img[o + 2] = c[2];
 }
 
-function fillRect(x, y, w, h, c) {
-  const x0 = Math.max(0, x);
-  const y0 = Math.max(0, y);
-  const x1 = Math.min(W, x + w);
-  const y1 = Math.min(H, y + h);
-  for (let yy = y0; yy < y1; yy++) {
-    for (let xx = x0; xx < x1; xx++) {
-      const o = (yy * W + xx) * 3;
-      px[o] = c[0];
-      px[o + 1] = c[1];
-      px[o + 2] = c[2];
+function rect(x: number, y: number, w: number, h: number, c: [number, number, number]): void {
+  for (let j = y; j < y + h; j++) for (let i = x; i < x + w; i++) px(i, j, c);
+}
+
+function hline(y: number, x0: number, x1: number, c: [number, number, number], t = 1): void {
+  rect(x0, y, x1 - x0, t, c);
+}
+
+function vline(x: number, y0: number, y1: number, c: [number, number, number], t = 1): void {
+  rect(x, y0, t, y1 - y0, c);
+}
+
+// Fixed-seed LCG (deterministic; seed 20261120).
+let seed = 20261120;
+function rnd(): number {
+  seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+  return seed / 0x7fffffff;
+}
+
+function textWidth(s: string, scale: number): number {
+  return s.length * 6 * scale - scale;
+}
+
+function drawText(s: string, x: number, y: number, scale: number, c: [number, number, number]): void {
+  for (let i = 0; i < s.length; i++) {
+    const g = FONT[s[i]] ?? FONT['?'];
+    for (let r = 0; r < 7; r++) {
+      for (let col = 0; col < 5; col++) {
+        if (g[r][col] === '1') {
+          rect(x + i * 6 * scale + col * scale, y + r * scale, scale, scale, c);
+        }
+      }
     }
   }
 }
 
-function fillCircle(cx, cy, r, c) {
-  for (let y = cy - r; y <= cy + r; y++) {
-    for (let x = cx - r; x <= cx + r; x++) {
-      const dx = x - cx;
-      const dy = y - cy;
-      if (dx * dx + dy * dy <= r * r) setPixel(x, y, c);
-    }
-  }
+function drawTextCentered(s: string, cx: number, y: number, scale: number, c: [number, number, number]): void {
+  drawText(s, Math.round(cx - textWidth(s, scale) / 2), y, scale, c);
 }
 
-// ---- CRC32 (PNG chunk checksums) ------------------------------------------
-const CRC_TABLE = new Uint32Array(256);
-for (let n = 0; n < 256; n++) {
-  let c = n;
-  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-  CRC_TABLE[n] = c >>> 0;
+// Word-wrap plain text to lines that fit maxWidth px at the given scale.
+function wrap(s: string, maxWidth: number, scale: number): string[] {
+  const maxChars = Math.max(1, Math.floor((maxWidth + scale) / (6 * scale)));
+  const words = s.split(' ');
+  const lines: string[] = [];
+  let cur = '';
+  for (const w of words) {
+    const next = cur === '' ? w : `${cur} ${w}`;
+    if (next.length <= maxChars) {
+      cur = next;
+    } else {
+      if (cur !== '') lines.push(cur);
+      // A single over-long word is split hard (none of our words are).
+      cur = w.length > maxChars ? w.slice(0, maxChars) : w;
+      if (w.length > maxChars) lines.push(cur), (cur = w.slice(maxChars));
+    }
+  }
+  if (cur !== '') lines.push(cur);
+  return lines;
 }
-function crc32(buf) {
+
+function drawPara(s: string, x: number, y: number, maxWidth: number, scale: number, c: [number, number, number], lineH: number): number {
+  const lines = wrap(s, maxWidth, scale);
+  lines.forEach((ln, i) => drawText(ln, x, y + i * lineH, scale, c));
+  return y + lines.length * lineH;
+}
+
+// ---------------------------------------------------------------- PNG encoder
+const CRC_TABLE: number[] = (() => {
+  const t: number[] = [];
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+
+function crc32(buf: Buffer): number {
   let c = 0xffffffff;
   for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
 }
 
-function pngChunk(type, data) {
+function chunk(type: string, data: Buffer): Buffer {
   const len = Buffer.alloc(4);
   len.writeUInt32BE(data.length, 0);
-  const td = Buffer.concat([Buffer.from(type, "ascii"), data]);
+  const td = Buffer.concat([Buffer.from(type, 'ascii'), data]);
   const crc = Buffer.alloc(4);
   crc.writeUInt32BE(crc32(td), 0);
   return Buffer.concat([len, td, crc]);
 }
 
-function encodePng() {
+function encodePNG(): Buffer {
   const raw = Buffer.alloc(H * (1 + W * 3));
   for (let y = 0; y < H; y++) {
     raw[y * (1 + W * 3)] = 0; // filter: none
-    raw.set(px.subarray(y * W * 3, (y + 1) * W * 3), y * (1 + W * 3) + 1);
+    img.copy(raw, y * (1 + W * 3) + 1, y * W * 3, (y + 1) * W * 3);
   }
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(W, 0);
   ihdr.writeUInt32BE(H, 4);
   ihdr[8] = 8; // bit depth
-  ihdr[9] = 2; // colour type: RGB
-  ihdr[10] = 0; // compression
-  ihdr[11] = 0; // filter
-  ihdr[12] = 0; // interlace
-  const idat = zlib.deflateSync(raw, { level: 9 });
+  ihdr[9] = 2; // color type RGB
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
   return Buffer.concat([
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    pngChunk("IHDR", ihdr),
-    pngChunk("IDAT", idat),
-    pngChunk("IEND", Buffer.alloc(0)),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', deflateSync(raw, { level: 9 })),
+    chunk('IEND', Buffer.alloc(0)),
   ]);
 }
 
-// ---- 5x7 bitmap font (uppercase, digits, punctuation) ----------------------
-const FONT = {
-  " ": ["00000", "00000", "00000", "00000", "00000", "00000", "00000"],
-  A: ["01110", "10001", "10001", "11111", "10001", "10001", "10001"],
-  B: ["11110", "10001", "10001", "11110", "10001", "10001", "11110"],
-  C: ["01110", "10001", "10000", "10000", "10000", "10001", "01110"],
-  D: ["11110", "10001", "10001", "10001", "10001", "10001", "11110"],
-  E: ["11111", "10000", "10000", "11110", "10000", "10000", "11111"],
-  F: ["11111", "10000", "10000", "11110", "10000", "10000", "10000"],
-  G: ["01110", "10001", "10000", "10111", "10001", "10001", "01111"],
-  H: ["10001", "10001", "10001", "11111", "10001", "10001", "10001"],
-  I: ["01110", "00100", "00100", "00100", "00100", "00100", "01110"],
-  J: ["00111", "00010", "00010", "00010", "00010", "10010", "01100"],
-  K: ["10001", "10010", "10100", "11000", "10100", "10010", "10001"],
-  L: ["10000", "10000", "10000", "10000", "10000", "10000", "11111"],
-  M: ["10001", "11011", "10101", "10101", "10001", "10001", "10001"],
-  N: ["10001", "11001", "10101", "10011", "10001", "10001", "10001"],
-  O: ["01110", "10001", "10001", "10001", "10001", "10001", "01110"],
-  P: ["11110", "10001", "10001", "11110", "10000", "10000", "10000"],
-  Q: ["01110", "10001", "10001", "10001", "10101", "10010", "01101"],
-  R: ["11110", "10001", "10001", "11110", "10100", "10010", "10001"],
-  S: ["01111", "10000", "10000", "01110", "00001", "00001", "11110"],
-  T: ["11111", "00100", "00100", "00100", "00100", "00100", "00100"],
-  U: ["10001", "10001", "10001", "10001", "10001", "10001", "01110"],
-  V: ["10001", "10001", "10001", "10001", "10001", "01010", "00100"],
-  W: ["10001", "10001", "10001", "10101", "10101", "10101", "01010"],
-  X: ["10001", "10001", "01010", "00100", "01010", "10001", "10001"],
-  Y: ["10001", "10001", "01010", "00100", "00100", "00100", "00100"],
-  Z: ["11111", "00001", "00010", "00100", "01000", "10000", "11111"],
-  "0": ["01110", "10001", "10011", "10101", "11001", "10001", "01110"],
-  "1": ["00100", "01100", "00100", "00100", "00100", "00100", "01110"],
-  "2": ["01110", "10001", "00001", "00110", "01000", "10000", "11111"],
-  "3": ["11111", "00010", "00100", "00010", "00001", "10001", "01110"],
-  "4": ["00010", "00110", "01010", "10010", "11111", "00010", "00010"],
-  "5": ["11111", "10000", "11110", "00001", "00001", "10001", "01110"],
-  "6": ["00110", "01000", "10000", "11110", "10001", "10001", "01110"],
-  "7": ["11111", "00001", "00010", "00100", "01000", "01000", "01000"],
-  "8": ["01110", "10001", "10001", "01110", "10001", "10001", "01110"],
-  "9": ["01110", "10001", "10001", "01111", "00001", "00010", "01100"],
-  ".": ["00000", "00000", "00000", "00000", "00000", "01100", "01100"],
-  ",": ["00000", "00000", "00000", "00000", "01100", "00100", "01000"],
-  ":": ["00000", "01100", "01100", "00000", "01100", "01100", "00000"],
-  ";": ["00000", "01100", "01100", "00000", "01100", "00100", "01000"],
-  "'": ["00100", "00100", "01000", "00000", "00000", "00000", "00000"],
-  '"': ["01010", "01010", "00000", "00000", "00000", "00000", "00000"],
-  "!": ["00100", "00100", "00100", "00100", "00100", "00000", "00100"],
-  "?": ["01110", "10001", "00001", "00110", "00100", "00000", "00100"],
-  "-": ["00000", "00000", "00000", "01110", "00000", "00000", "00000"],
-  $: ["00100", "01111", "10100", "01110", "00101", "11110", "00100"],
-  "%": ["11001", "11010", "00010", "00100", "01000", "01011", "10011"],
-  "(": ["00010", "00100", "01000", "01000", "01000", "00100", "00010"],
-  ")": ["01000", "00100", "00010", "00010", "00010", "00100", "01000"],
-  "/": ["00001", "00010", "00010", "00100", "01000", "01000", "10000"],
-  "&": ["01100", "10010", "10100", "01000", "10101", "10010", "01101"],
-  "+": ["00000", "00100", "00100", "01110", "00100", "00100", "00000"],
-  "=": ["00000", "00000", "11111", "00000", "11111", "00000", "00000"],
-  "*": ["00000", "00100", "10101", "01110", "10101", "00100", "00000"],
-  "\u2022": ["00000", "00000", "01100", "01100", "01100", "00000", "00000"],
-};
+// ---------------------------------------------------------------- layout
+const M = 40; // margin
+const R = W - M; // right edge of text area
 
-function textWidth(text, scale) {
-  if (!text.length) return 0;
-  return text.length * 6 * scale - scale;
+// Masthead
+drawTextCentered('THE WORLD TODAY', W / 2, 30, 9, INK);
+hline(100, M, R, INK, 2);
+hline(105, M, R, INK, 1);
+
+// Black date band
+rect(M, 112, R - M, 38, INK);
+drawTextCentered('FRIDAY 20 NOVEMBER 2026', W / 2, 120, 4, WHITE);
+
+// Lead kicker + headline + deck
+drawText('VICE CITY - VIDEO GAMES', M, 164, 2, RED);
+drawText('GTA VI: $3.79 BILLION', M, 184, 6, INK);
+drawText('IN ONE DAY', M, 228, 6, INK);
+drawText('32.5M COPIES PRE-RELEASE - BIGGEST LAUNCH EVER', M, 278, 2, INK);
+hline(298, M, R, INK, 1);
+
+// Vice City dusk skyline, y 306..436
+const SKY_TOP = 306;
+const SKY_BOT = 436;
+const SKY_H = SKY_BOT - SKY_TOP;
+for (let y = 0; y < SKY_H; y++) {
+  const t = y / SKY_H;
+  // deep purple -> magenta -> orange horizon
+  let c: [number, number, number];
+  if (t < 0.45) {
+    const u = t / 0.45;
+    c = [Math.round(38 + (88 - 38) * u), Math.round(22 + (28 - 22) * u), Math.round(84 + (96 - 84) * u)];
+  } else if (t < 0.8) {
+    const u = (t - 0.45) / 0.35;
+    c = [Math.round(88 + (214 - 88) * u), Math.round(28 + (84 - 28) * u), Math.round(96 + (120 - 96) * u)];
+  } else {
+    const u = (t - 0.8) / 0.2;
+    c = [Math.round(214 + (250 - 214) * u), Math.round(84 + (170 - 84) * u), Math.round(120 + (110 - 120) * u)];
+  }
+  hline(SKY_TOP + y, M, R, c, 1);
 }
-
-function drawText(text, x, y, scale, color) {
-  let cx = x;
-  for (const ch of text) {
-    const g = FONT[ch] || FONT[" "];
-    for (let r = 0; r < 7; r++) {
-      const row = g[r];
-      for (let c = 0; c < 5; c++) {
-        if (row[c] === "1") {
-          fillRect(cx + c * scale, y + r * scale, scale, scale, color);
-        }
-      }
-    }
-    cx += 6 * scale;
+// Sun
+const SUN: [number, number, number] = [247, 215, 116];
+for (let dy = -26; dy <= 26; dy++) {
+  for (let dx = -26; dx <= 26; dx++) {
+    if (dx * dx + dy * dy <= 26 * 26) px(812 + dx, 362 + dy, SUN);
   }
 }
-
-function drawTextCentered(text, y, scale, color) {
-  drawText(text, Math.round((W - textWidth(text, scale)) / 2), y, scale, color);
-}
-
-// Greedy word wrap: returns lines that fit maxW pixels at the given scale.
-function wrapText(text, maxW, scale) {
-  const words = text.split(" ");
-  const lines = [];
-  let cur = "";
-  for (const w of words) {
-    const trial = cur ? cur + " " + w : w;
-    if (textWidth(trial, scale) <= maxW || !cur) {
-      cur = trial;
-    } else {
-      lines.push(cur);
-      cur = w;
+// Buildings (dark silhouettes, fixed LCG windows)
+const BLD: [number, number, number] = [26, 30, 60];
+let bx = M;
+while (bx < R) {
+  const bw = 34 + Math.floor(rnd() * 44);
+  const bh = 34 + Math.floor(rnd() * 62);
+  const top = SKY_BOT - 14 - bh;
+  rect(bx, top, bw, bh + 14, BLD);
+  // lit windows
+  for (let wy = top + 6; wy < SKY_BOT - 18; wy += 11) {
+    for (let wx = bx + 5; wx < bx + bw - 4; wx += 10) {
+      if (rnd() < 0.45) rect(wx, wy, 4, 5, [255, 214, 110]);
     }
   }
-  if (cur) lines.push(cur);
-  return lines;
+  bx += bw + 4;
 }
-
-function drawLines(lines, x, y, scale, color, lineH) {
-  for (let i = 0; i < lines.length; i++) {
-    drawText(lines[i], x, y + i * lineH, scale, color);
-  }
-  return y + lines.length * lineH;
+// Water strip with reflection streaks
+rect(M, SKY_BOT - 14, R - M, 14, [22, 34, 74]);
+for (let i = 0; i < 5; i++) {
+  const y = SKY_BOT - 11 + i * 3;
+  const x0 = M + 30 + Math.floor(rnd() * 300);
+  hline(y, x0, Math.min(R - 30, x0 + 120 + Math.floor(rnd() * 220)), [255, 122, 184], 1);
 }
+// "VICE CITY" over the skyline, painted last so no building covers it
+drawText('VICE CITY', 58, 330, 4, [255, 122, 184]);
 
-// Fixed-seed LCG (deterministic; no Math.random, no clock).
-let lcgState = 20261120;
-function lcgNext() {
-  lcgState = (1103515245 * lcgState + 12345) & 0x7fffffff;
-  return lcgState / 0x7fffffff;
-}
+// Lead body
+drawPara(
+  'TAKE-TWO SAYS THE GAME TOOK IN $3.79 BILLION IN RETAIL SALES ON ITS FIRST DAY, THE BIGGEST ENTERTAINMENT LAUNCH IN HISTORY. A RECORD 32.5 MILLION COPIES WERE SOLD BEFORE RELEASE, AND REVIEWERS GAVE IT A 99 ON METACRITIC.',
+  M,
+  450,
+  R - M,
+  2,
+  INK,
+  16,
+);
+hline(506, M, R, INK, 1);
 
-// ---- Vice City dusk skyline -------------------------------------------------
-// Panel x=36..988, y=306..446. Layered sunset bands, a low sun, dark
-// tower silhouettes with lit windows, and a strip of water at the bottom.
-function drawSkyline() {
-  const x0 = 36;
-  const y0 = 306;
-  const w = 952;
-  const h = 140;
-  const bands = [
-    [36, 22, 64],
-    [61, 31, 99],
-    [138, 47, 110],
-    [214, 84, 127],
-    [242, 140, 60],
-    [245, 196, 107],
-  ];
-  const bandH = Math.floor(h / bands.length);
-  for (let i = 0; i < bands.length; i++) {
-    const bh = i === bands.length - 1 ? h - bandH * i : bandH;
-    fillRect(x0, y0 + bandH * i, w, bh, bands[i]);
-  }
-  // Sun, low over the bay.
-  fillCircle(800, 368, 30, [251, 224, 138]);
-  fillCircle(800, 368, 22, [253, 236, 176]);
-  // "VICE CITY" in neon pink across the sky.
-  drawText("VICE CITY", 66, 332, 4, [122, 30, 78]);
-  drawText("VICE CITY", 64, 330, 4, [255, 179, 209]);
-  // Towers: dark slabs with lit windows, standing in the water line.
-  const ground = 418;
-  const heights = [20, 42, 12, 35, 48, 8, 28, 40, 16, 32, 45, 10, 26, 38, 18, 30, 44, 14, 24, 36];
-  const bw = 46;
-  const gap = 2;
-  for (let i = 0; i < heights.length; i++) {
-    const bx = x0 + i * (bw + gap);
-    const top = ground - 8 - heights[i];
-    fillRect(bx, top, bw, ground - top, [23, 16, 46]);
-    // Lit windows on a fixed 10x12 grid, LCG decides which are lit.
-    for (let wy = top + 6; wy < ground - 6; wy += 12) {
-      for (let wx = bx + 5; wx < bx + bw - 5; wx += 10) {
-        if (lcgNext() < 0.28) fillRect(wx, wy, 4, 6, [255, 215, 106]);
-      }
-    }
-  }
-  // Water at the foot of the towers, with sunset streaks.
-  fillRect(x0, ground, w, y0 + h - ground, [27, 42, 82]);
-  fillRect(x0 + 60, ground + 6, 180, 2, [245, 196, 107]);
-  fillRect(x0 + 420, ground + 12, 260, 2, [214, 84, 127]);
-  fillRect(x0 + 700, ground + 18, 150, 2, [251, 224, 138]);
-  fillRect(x0 + 120, ground + 20, 120, 2, [138, 47, 110]);
-}
+// Three columns, y 520..800
+const COL_Y = 520;
+const COL_W = 304;
+const COLS = [M, 360, 680];
+vline(352, COL_Y, 798, INK, 1);
+vline(672, COL_Y, 798, INK, 1);
 
-// ---- content: Friday 20 November 2026 ---------------------------------------
-const LEAD_BODY =
-  "SENSOR TOWER ESTIMATES THE GAME TOOK IN $2.36 BILLION IN UNDER 24 HOURS, " +
-  "WITH ABOUT 24.6 MILLION COPIES SOLD, THREE QUARTERS ON PLAYSTATION. " +
-  "VIEWERS WATCHED MORE THAN 132 MILLION HOURS ON TWITCH, YOUTUBE AND KICK.";
-const COL1_BODY =
-  "TAIWAN'S INDEX FELL MORE THAN 2,200 POINTS IN A DAY, DROPPING BELOW 37,000 " +
-  "FOR THE FIRST TIME SINCE MID-APRIL. JAPAN'S NIKKEI AND KOREA'S KOSPI EACH " +
-  "FELL 4.8 PERCENT, AND SOFTBANK LOST MORE THAN 16 PERCENT, AS INVESTORS " +
-  "LOST FAITH IN AI STOCKS. THE S&P 500 FELL 2 PERCENT ON THURSDAY, ITS " +
-  "FIFTH STRAIGHT DAILY DROP.";
-const COL2_BODY =
-  "PRESIDENT PRABOWO MET PRESIDENT XI IN SHENZHEN ON FRIDAY TO TALK TRADE, " +
-  "INVESTMENT AND THE SOUTH CHINA SEA. REUTERS CALLED THE SUMMIT A FAILURE " +
-  "OF PERSONAL DIPLOMACY: THE PEACE DECLARATION WAS SIGNED, BUT WITH NO " +
-  "ARMS-CONTROL TALKS AND NO PROGRESS ON IRAN, UKRAINE, TAIWAN, TRADE OR AI. " +
-  "TRUMP CALLED IT '12 OUT OF 10'.";
-const BRIEF = [
-  "KYIV HIT AGAIN FRIDAY - BALLISTIC MISSILES STRIKE BRIDGES",
-  "UK PLEDGES 1,000+ DRONES FOR UKRAINE, 260M POUND PACKAGE",
-  "TRUMP PARDONS BASEBALL LEGEND PETE ROSE, POSTHUMOUSLY",
-  "TAIWAN FLAGS 2,700 CHINA-LINKED ACCOUNTS TO META",
-  "INDONESIA ASKS GOOGLE ABOUT 19,000+ YOUTUBE CHANNELS REMOVED",
-  "COP31: FOSSIL FUELS CUT FROM DRAFT DEAL AMID PROTESTS",
+// Column A — markets
+drawText('MARKETS - TECHNOLOGY', COLS[0], COL_Y, 2, RED);
+drawText("WALL STREET'S", COLS[0], COL_Y + 18, 3, INK);
+drawText('BLACK FRIDAY', COLS[0], COL_Y + 42, 3, INK);
+drawPara(
+  'THE S&P 500 FELL 3.7 PERCENT ON FRIDAY, ITS SEVENTH STRAIGHT LOSS, AND INTO CORRECTION. THE NASDAQ FELL 5.28 PERCENT, WIPING OUT ALL OF ITS 2026 GAINS. NVIDIA DROPPED 14 PERCENT AFTER REUTERS REPORTED THE SEC IS PROBING ITS ACCOUNTING. ASIA FELL FIRST: NIKKEI AND KOSPI EACH DOWN 4.8 PERCENT.',
+  COLS[0],
+  COL_Y + 72,
+  COL_W,
+  2,
+  INK,
+  16,
+);
+
+// Column B — Poland
+drawText('POLAND - SECURITY', COLS[1], COL_Y, 2, RED);
+drawText('MISSILES LAND', COLS[1], COL_Y + 18, 3, INK);
+drawText('IN POLAND', COLS[1], COL_Y + 42, 3, INK);
+drawPara(
+  "TWO RUSSIAN MISSILES AND A DRONE CRASHED IN SOUTH-EASTERN POLAND ON FRIDAY DURING RUSSIA'S BIGGEST NOVEMBER STRIKE ON UKRAINE. A KH-101 WAS CONFIRMED NEAR NOWY LIPOWIEC. NATO CONDEMNED 'GRAVE VIOLATIONS' OF POLISH AIRSPACE AND SCRAMBLED JETS. PM TUSK CALLED IT A DELIBERATE PROVOCATION.",
+  COLS[1],
+  COL_Y + 72,
+  COL_W,
+  2,
+  INK,
+  16,
+);
+
+// Column C — Prabowo / Xi
+drawText('SHENZHEN - DIPLOMACY', COLS[2], COL_Y, 2, RED);
+drawText('PRABOWO MEETS XI', COLS[2], COL_Y + 18, 3, INK);
+drawText('SUMMIT JUDGED', COLS[2], COL_Y + 42, 3, INK);
+drawText('A FAILURE', COLS[2], COL_Y + 66, 3, INK);
+drawPara(
+  "PRESIDENT PRABOWO MET PRESIDENT XI IN SHENZHEN ON FRIDAY TO TALK TRADE, INVESTMENT AND THE SOUTH CHINA SEA. REUTERS CALLED THE SUMMIT A FAILURE OF PERSONAL DIPLOMACY. TRUMP CALLED IT '12 OUT OF 10'.",
+  COLS[2],
+  COL_Y + 96,
+  COL_W,
+  2,
+  INK,
+  16,
+);
+
+// IN BRIEF
+hline(810, M, R, INK, 1);
+drawText('IN BRIEF', M, 822, 3, INK);
+const BRIEF_LEFT = [
+  'TRUMP THREATENS BIG TAXES ON FIRMS BUILDING AI DATA CENTERS ABROAD',
+  'UK PLEDGES 1,000+ DRONES FOR UKRAINE, 260M POUND PACKAGE',
+  'TRUMP PARDONS BASEBALL LEGEND PETE ROSE, POSTHUMOUSLY',
 ];
-
-// ---- layout -----------------------------------------------------------------
-function drawPage() {
-  // Masthead.
-  drawTextCentered("THE WORLD TODAY", 30, 8, INK);
-  fillRect(36, 98, 952, 3, INK);
-  fillRect(36, 104, 952, 1, INK);
-
-  // Date band.
-  fillRect(36, 114, 952, 40, BAND);
-  drawTextCentered("FRIDAY 20 NOVEMBER 2026", 124, 3, [255, 255, 255]);
-
-  // Lead story.
-  drawText("VICE CITY - VIDEO GAMES", 36, 166, 2, RED);
-  drawText("GTA VI: $2.36 BILLION", 36, 188, 5, INK);
-  drawText("IN ONE DAY", 36, 228, 5, INK);
-  drawText("24.6M COPIES, 132M HOURS WATCHED - VICE CITY TAKES OVER THE WORLD", 36, 272, 2, INK);
-  fillRect(36, 296, 952, 1, INK);
-
-  drawSkyline();
-
-  drawLines(wrapText(LEAD_BODY, 952, 2), 36, 458, 2, INK, 18);
-  fillRect(36, 524, 952, 1, INK);
-
-  // Two columns: markets (left) and diplomacy (right).
-  drawText("MARKETS - TECHNOLOGY", 36, 536, 2, RED);
-  drawText("ASIAN MARKETS", 36, 558, 3, INK);
-  drawText("TUMBLE ON FRIDAY", 36, 582, 3, INK);
-  drawLines(wrapText(COL1_BODY, 456, 2), 36, 612, 2, INK, 18);
-
-  drawText("SHENZHEN - DIPLOMACY", 532, 536, 2, RED);
-  drawText("PRABOWO MEETS XI;", 532, 558, 3, INK);
-  drawText("SUMMIT JUDGED", 532, 582, 3, INK);
-  drawText("A FAILURE", 532, 606, 3, INK);
-  drawLines(wrapText(COL2_BODY, 456, 2), 532, 636, 2, INK, 18);
-
-  fillRect(36, 810, 952, 1, INK);
-
-  // IN BRIEF strip: two columns x three rows.
-  drawText("IN BRIEF", 36, 822, 3, INK);
-  const rowY = [852, 888, 924];
-  for (let i = 0; i < BRIEF.length; i++) {
-    const col = i < 3 ? 0 : 1;
-    const row = i % 3;
-    const x = col === 0 ? 36 : 532;
-    const y = rowY[row];
-    drawText("\u2022", x, y, 2, RED);
-    drawLines(wrapText(BRIEF[i], 456 - 24, 2), x + 24, y, 2, INK, 17);
+const BRIEF_RIGHT = [
+  'TAIWAN FLAGS 2,700 CHINA-LINKED ACCOUNTS TO META',
+  'INDONESIA ASKS GOOGLE ABOUT 19,000+ CHANNELS REMOVED',
+  'COP31: FOSSIL FUELS CUT FROM DRAFT DEAL AMID PROTESTS',
+];
+function drawBrief(items: string[], x: number, y0: number): void {
+  let y = y0;
+  for (const item of items) {
+    rect(x, y + 3, 8, 8, RED);
+    y = drawPara(item, x + 16, y, 440, 2, INK, 16) + 6;
   }
-
-  // Footer.
-  fillRect(36, 972, 952, 1, INK);
-  drawTextCentered("THE WORLD TODAY - FRIDAY 20 NOVEMBER 2026", 982, 2, INK);
 }
+drawBrief(BRIEF_LEFT, M, 852);
+drawBrief(BRIEF_RIGHT, 540, 852);
 
-function main() {
-  drawPage();
-  const outDir = process.env.MAKEFUN_OUTPUT_DIR || "/output";
-  fs.mkdirSync(outDir, { recursive: true });
-  const outPath = path.join(outDir, "entry.png");
-  const png = encodePng();
-  fs.writeFileSync(outPath, png);
-  console.log("wrote " + outPath + " (" + png.length + " bytes)");
-}
+// Footer
+hline(966, M, R, INK, 1);
+drawTextCentered('THE WORLD TODAY - FRIDAY 20 NOVEMBER 2026', W / 2, 978, 2, INK);
 
-main();
+// ---------------------------------------------------------------- write
+const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+mkdirSync(outDir, { recursive: true });
+writeFileSync(join(outDir, 'entry.png'), encodePNG());
